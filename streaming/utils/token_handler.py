@@ -3,10 +3,7 @@ from typing import List
 
 def split_preprocessed_tokens(text: str) -> List[str]:
     """
-    Split a preprocessed message (as produced by the DataLoader's preprocessing)
-    into tokens. Assumes the input is already lowercased, lemmatized, and cleaned,
-    with tokens separated by whitespace.
+    Split preprocessed text into tokens.
+    Assumes text is already preprocessed and space-separated.
     """
-    if not text:
-        return []
-    return [t for t in text.split() if t]
+    return [token.strip() for token in text.split() if token.strip()]

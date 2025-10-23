@@ -8,8 +8,8 @@ from streaming.detectors.duplicate_detector import DuplicateDetector
 class StreamingPipeline:
     """
     Orchestrates streaming detectors:
-      - FrequencyDetector (Count-Min Sketch)
-      - BurstDetector (DGIM)
+      - FrequencyDetector (Count-Min Sketch + DGIM for trending)
+      - BurstDetector (DGIM for most frequent terms in recent window)
       - DuplicateDetector (Bloom Filter)
 
     Use process_message to feed data and get aggregated outputs.
@@ -41,16 +41,21 @@ class StreamingPipeline:
         if frequency_queries:
             freq_out = self.frequency_detector.estimate_batch(frequency_queries)
 
+        burst_summary = self.burst_detector.get_burst_summary()
+
         out = {
             "frequencies": freq_out,
-            "burst": {
-                "is_burst": self.burst_detector.is_burst(),
-                "estimated_recent_count": self.burst_detector.estimated_recent_count(),
-                "baseline": self.burst_detector.baseline(),
-            },
+            "burst": burst_summary,
             "duplicate": dup_info,
         }
         return out
+
+    def sync_detectors(self, recent_tokens: Iterable[str]) -> None:
+        """
+        Synchronize tracked tokens between frequency and burst detectors.
+        Call this periodically to update burst detector with high-frequency tokens.
+        """
+        self.burst_detector.update_tracked_tokens(recent_tokens)
 
     def __repr__(self) -> str:
         return (

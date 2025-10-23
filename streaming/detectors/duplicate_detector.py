@@ -5,6 +5,9 @@ from streaming.utils.token_handler import split_preprocessed_tokens
 
 
 def shingles(tokens: List[str], k: int) -> List[str]:
+    """
+    Shingles are actually interpreted as n-grams here.
+    """
     if k <= 1:
         return tokens
     return [" ".join(tokens[i : i + k]) for i in range(0, max(0, len(tokens) - k + 1))]
