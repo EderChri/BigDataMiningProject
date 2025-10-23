@@ -20,6 +20,7 @@ class BurstDetector:
             top_k_tokens: int = 1000,
             burst_threshold: int = 10,
             report_top_n: int = 20,
+            promotion_threshold: int = 3
     ) -> None:
         """
         Parameters:
@@ -32,7 +33,7 @@ class BurstDetector:
         self.top_k_tokens = top_k_tokens
         self.burst_threshold = burst_threshold
         self.report_top_n = report_top_n
-
+        self.promotion_threshold = promotion_threshold
         # DGIM instances for each tracked token
         self._dgim_instances: Dict[str, DGIM] = {}
 
@@ -41,62 +42,71 @@ class BurstDetector:
 
         # Min-heap to maintain top K tokens: (estimate, token)
         self._heap: List[Tuple[int, str]] = []
-
+        # Candidate buffer
+        self._candidate_tokens: Dict[str, int] = {}
         # Message counter
         self._message_count = 0
 
-    def observe_message(self, text: str) -> None:
-        """Process a message and update DGIM instances."""
+    def observe_message(self, text: str):
         tokens = split_preprocessed_tokens(text)
         seen_in_message = set(tokens)
 
-        # Update existing DGIM instances
+        # Update tracked tokens
         for token in self._tracked_tokens:
-            if token in self._dgim_instances:
-                self._dgim_instances[token].push(1 if token in seen_in_message else 0)
+            self._dgim_instances[token].push(1 if token in seen_in_message else 0)
 
-        # Add new tokens if we have capacity
+        # Update candidate buffer
         for token in seen_in_message:
-            if token not in self._dgim_instances:
-                if len(self._dgim_instances) < self.top_k_tokens:
-                    # Add new token
-                    self._dgim_instances[token] = DGIM(window_size=self.window_size)
-                    self._dgim_instances[token].push(1)
-                    self._tracked_tokens.add(token)
+            if token not in self._tracked_tokens:
+                self._candidate_tokens[token] = self._candidate_tokens.get(token, 0) + 1
 
         self._message_count += 1
 
-    def update_tracked_tokens(self, candidate_tokens: Iterable[str]) -> None:
+    def update_tracked_tokens(self):
         """
-        Update which tokens are being tracked based on their current estimates.
-        This should be called periodically to add new high-frequency tokens.
+        Promote candidates that show repeated recent activity.
+        If full, replace the least active DGIM token.
         """
-        # Get current estimates for all tracked tokens
-        current_estimates = {}
-        for token in self._tracked_tokens:
-            if token in self._dgim_instances:
-                current_estimates[token] = self._dgim_instances[token].estimate()
+        # Compute recent estimates for tracked tokens
+        current_estimates = {t: dgim.estimate() for t, dgim in self._dgim_instances.items()}
 
-        # Check if we should add any candidate tokens
-        for token in candidate_tokens:
-            if token in self._dgim_instances:
+        for token, count in list(self._candidate_tokens.items()):
+            # Promote only if candidate is recently active
+            if count < self.promotion_threshold:
                 continue
 
+            # Case 1: there's room -> just add
             if len(self._dgim_instances) < self.top_k_tokens:
-                # Add new token
-                dgim = DGIM(window_size=self.window_size)
-                self._dgim_instances[token] = dgim
-                self._tracked_tokens.add(token)
-            else:
-                # Find minimum estimate among tracked tokens
-                if current_estimates:
-                    min_token = min(current_estimates, key=current_estimates.get)
-                    min_estimate = current_estimates[min_token]
+                self._promote_token(token, count)
+                continue
 
-                    # For new tokens, we can't know their recent count yet,
-                    # so we only replace if we're explicitly told to track them
-                    # This prevents unnecessary churn
-                    pass
+            # Case 2: full -> consider replacement
+            min_token = min(current_estimates, key=current_estimates.get)
+            min_estimate = current_estimates[min_token]
+
+            # Promote only if candidate has stronger recent activity
+            if count > min_estimate:
+                # Replace least active token
+                del self._dgim_instances[min_token]
+                self._tracked_tokens.remove(min_token)
+                del current_estimates[min_token]
+
+                self._promote_token(token, count)
+
+            # Remove processed candidate
+            del self._candidate_tokens[token]
+
+        # Decay remaining candidates
+        for token in self._candidate_tokens:
+            self._candidate_tokens[token] = max(0, self._candidate_tokens[token] - 1)
+
+    def _promote_token(self, token: str, count: int):
+        dgim = DGIM(window_size=self.window_size)
+        # Initialize with `count` appearances
+        for _ in range(count):
+            dgim.push(1)
+        self._dgim_instances[token] = dgim
+        self._tracked_tokens.add(token)
 
     def get_burst_terms(self, top_n: Optional[int] = None) -> List[Tuple[str, int]]:
         """
