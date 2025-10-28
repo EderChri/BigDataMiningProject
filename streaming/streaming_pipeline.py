@@ -22,7 +22,7 @@ class StreamingPipeline:
         duplicate_detector: Optional[DuplicateDetector] = None,
     ) -> None:
         self.frequency_detector = frequency_detector or FrequencyDetector()
-        self.burst_detector = burst_detector or BurstDetector()
+        self.burst_detector = burst_detector or BurstDetector(window_size=25)
         self.duplicate_detector = duplicate_detector or DuplicateDetector()
 
     def process_message(self, text: str, frequency_queries: Optional[Iterable[str]] = None) -> Dict:
@@ -41,7 +41,7 @@ class StreamingPipeline:
         if frequency_queries:
             freq_out = self.frequency_detector.estimate_batch(frequency_queries)
 
-        burst_summary = self.burst_detector.get_burst_summary()
+        burst_summary = self.burst_detector.detect_spikes(25, 25)
 
         out = {
             "frequencies": freq_out,
@@ -49,13 +49,6 @@ class StreamingPipeline:
             "duplicate": dup_info,
         }
         return out
-
-    def sync_detectors(self, recent_tokens: Iterable[str]) -> None:
-        """
-        Synchronize tracked tokens between frequency and burst detectors.
-        Call this periodically to update burst detector with high-frequency tokens.
-        """
-        self.burst_detector.update_tracked_tokens(recent_tokens)
 
     def __repr__(self) -> str:
         return (

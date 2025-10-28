@@ -195,12 +195,9 @@ def main(
             # Update top K tokens tracking in frequency detector
             pipeline.frequency_detector.periodic_update(recent_tokens)
 
-            # Sync burst detector with high-frequency tokens
-            pipeline.sync_detectors(recent_tokens)
-
             # Get snapshots from both detectors
             top_tokens = pipeline.frequency_detector.get_frequency_analysis(top_n=top_frequency)
-            burst_summary = pipeline.burst_detector.get_burst_summary()
+            burst_summary = pipeline.burst_detector.detect_spikes(recent_k=25)
 
             snapshot = {
                 "message_count": processed,
@@ -216,7 +213,6 @@ def main(
     # Final update if there are remaining tokens
     if recent_tokens:
         pipeline.frequency_detector.periodic_update(recent_tokens)
-        pipeline.sync_detectors(recent_tokens)
 
     # Final frequency estimates (aggregated)
     freq_estimates: Dict[str, int] = {}
@@ -225,7 +221,7 @@ def main(
 
     # Get final analysis
     final_top_tokens = pipeline.frequency_detector.get_frequency_analysis(top_n=top_frequency)
-    final_burst = pipeline.burst_detector.get_burst_summary()
+    final_burst = pipeline.burst_detector.detect_spikes(recent_k=25)
 
     # Build aggregated summary
     summary = {

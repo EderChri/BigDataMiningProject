@@ -1,104 +1,93 @@
 from collections import deque
-from typing import Deque, List, Tuple
+from typing import List, Tuple, Deque, Optional
+
+Bucket = Tuple[int, int]  # (timestamp, size)
 
 
-class DGIM:
+class DGIMManager:
     """
-    DGIM algorithm for counting number of 1s in the last N bits of a binary stream.
-
-    This implementation tracks buckets where each bucket represents a group of 1s of size 2^k,
-    identified by the timestamp (arrival index) of its most recent 1 (bucket 'end time').
-
-    Operations:
-      - push(bit): Ingests next bit (0 or 1)
-      - estimate(): Returns estimated count of 1s in the last window_size bits
-
-    Error: Estimate over-count <= 50% of the size of the oldest bucket included in the window.
+    DGIM over multiple bins (indexed 0..num_bins-1).
+    timestamp is integer event index (monotonic).
     """
 
-    def __init__(self, window_size: int) -> None:
-        if window_size <= 0:
-            raise ValueError("window_size must be positive")
-        self.window_size = int(window_size)
-        # For each bucket size (1,2,4,...), keep a deque of (size, end_timestamp)
-        self.levels: List[Deque[Tuple[int, int]]] = []
-        self.time = 0  # arrival index of next bit
+    def __init__(self, num_bins: int, window_size: int):
+        self.num_bins = num_bins
+        self.window_size = window_size
+        # per-bin deque of buckets, newest at left
+        self.buckets: List[Deque[Bucket]] = [deque() for _ in range(num_bins)]
+        self.current_time = 0
 
-    def _expire_old(self) -> None:
-        """Drop buckets whose end_timestamp is older than the window start."""
-        window_start = self.time - self.window_size
-        for dq in self.levels:
-            while dq and dq[0][1] <= window_start:
-                dq.popleft()
+    def _expire(self, bin_idx: int):
+        expire_before = self.current_time - self.window_size + 1
+        dq = self.buckets[bin_idx]
+        while dq and dq[-1][0] < expire_before:
+            dq.pop()  # remove oldest bucket entirely
 
-    def push(self, bit: int) -> None:
-        """Push the next bit (0 or 1) into the stream."""
-        self.time += 1
-        if bit not in (0, 1):
-            raise ValueError("bit must be 0 or 1")
+    def _compress(self, bin_idx: int):
+        dq = self.buckets[bin_idx]
+        # ensure at most 2 buckets of each size; when 3, merge oldest two
+        # We'll scan sizes from smallest upward until stable.
+        sizes_seen = {}
+        i = 0
+        while i < len(dq):
+            _, size = dq[i]
+            sizes_seen.setdefault(size, 0)
+            sizes_seen[size] += 1
+            if sizes_seen[size] == 3:
+                # merge the two oldest buckets of this size (rightmost two)
+                # find rightmost two indexes with this size
+                idxs = [j for j, (_, s) in enumerate(dq) if s == size]
+                # idxs are from 0..n-1 (newest..oldest)
+                # take two oldest (largest indices)
+                a, b = idxs[-2], idxs[-1]
+                # new bucket timestamp = timestamp of the newer of the two merged (a is newer than b)
+                t_new = dq[a][0]
+                # remove by index b then a (since deque supports rotation, convert to list)
+                tmp = list(dq)
+                # replace a and b by a single bucket at position a with doubled size
+                tmp.pop(b)
+                tmp.pop(a)
+                tmp.insert(a, (t_new, size * 2))
+                dq = deque(tmp)
+                self.buckets[bin_idx] = dq
+                # restart scanning
+                sizes_seen = {}
+                i = 0
+                continue
+            i += 1
 
-        # Expire old buckets at this time tick
-        self._expire_old()
+    def add_one(self, bin_idx: int):
+        """Add a 1-bit to bin at current_time (advance time must be handled externally)."""
+        dq = self.buckets[bin_idx]
+        dq.appendleft((self.current_time, 1))
+        self._compress(bin_idx)
+        self._expire(bin_idx)
 
-        if bit == 0:
-            return
+    def tick(self):
+        """Advance global time (call once per message)."""
+        self.current_time += 1
+        # Optionally expire across bins lazily on query/add; not necessary here.
 
-        # Create a new bucket of size 1 at current time
-        if not self.levels:
-            self.levels.append(deque())
-        self.levels[0].append((1, self.time))
-
-        # For each level, ensure at most 2 buckets; if 3, merge two oldest into next level
-        lvl = 0
-        while True:
-            # Ensure at most two buckets at level lvl
-            if len(self.levels[lvl]) <= 2:
-                break
-
-            # Merge two oldest
-            oldest = self.levels[lvl].popleft()
-            second_oldest = self.levels[lvl].popleft()
-            merged_size = oldest[0] + second_oldest[0]  # should be 2^lvl + 2^lvl = 2^(lvl+1)
-            merged_end_time = max(oldest[1], second_oldest[1])
-
-            # Move to next level
-            next_lvl = lvl + 1
-            if next_lvl >= len(self.levels):
-                self.levels.append(deque())
-            self.levels[next_lvl].append((merged_size, merged_end_time))
-
-            lvl = next_lvl
-
-    def estimate(self) -> int:
+    def count_last(self, bin_idx: int, k: Optional[int] = None) -> int:
         """
-        Estimate the number of 1s in the last window_size bits.
+        Estimate number of 1s in last k events (k defaults to full window_size).
+        Uses standard DGIM approximation: full buckets + 1/2 of oldest included bucket.
         """
-        self._expire_old()
+        if k is None:
+            k = self.window_size
+        if k <= 0:
+            return 0
+        threshold = self.current_time - k + 1
         total = 0
-        # Traverse levels from newest to oldest buckets
-        # We will include all but the oldest bucket fully; the oldest bucket contributes half its size
-        oldest_bucket_size = 0
-        oldest_bucket_found = False
-
-        # Collect all buckets as (end_time, size), newest last
-        buckets: List[Tuple[int, int]] = []
-        for lvl, dq in enumerate(self.levels):
-            for size, end_time in dq:
-                buckets.append((end_time, size))
-        buckets.sort()  # ascending by end_time (oldest first)
-
-        for idx, (end_time, size) in enumerate(reversed(buckets)):
-            # Include fully
-            total += size
-            oldest_bucket_size = size
-            oldest_bucket_found = True
-
-        if oldest_bucket_found:
-            # Subtract half of the oldest bucket to bound error
-            total -= oldest_bucket_size // 2
-
+        dq = self.buckets[bin_idx]
+        if not dq:
+            return 0
+        # iterate from newest to oldest
+        for idx, (ts, size) in enumerate(dq):
+            if ts >= threshold:
+                total += size
+            else:
+                # oldest partially covered bucket -> add approx half
+                total += size // 2
+                break
         return total
-
-    def __repr__(self) -> str:
-        active_buckets = sum(len(dq) for dq in self.levels)
-        return f"DGIM(window_size={self.window_size}, time={self.time}, buckets={active_buckets})"
