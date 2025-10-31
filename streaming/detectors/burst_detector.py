@@ -3,7 +3,7 @@ from typing import Iterable, Tuple, List, Dict, Optional
 import random
 
 from streaming.algorithms import CountMinSketch, DGIMManager
-from streaming.utils.reservoir import Reservoir
+from streaming.utils.reservoir import Reservoir, Reservoir
 
 
 class BurstDetector:
@@ -13,7 +13,7 @@ class BurstDetector:
     """
 
 
-    def __init__(self, window_size: int,  epsilon: float = 0.005, delta: float = 1e-3, seed: int = 0, reservoir_size: int = 8):
+    def __init__(self, window_size: int,  epsilon: float = 0.005, delta: float = 1e-3, seed: int = 0):
         """
         window_size: DGIM window in number of messages/events
         reservoir_size: number of tokens to keep per bin
@@ -21,29 +21,26 @@ class BurstDetector:
         self.cms = CountMinSketch.from_error_delta(epsilon=epsilon, delta=delta, seed=seed)
 
         self.dgim = DGIMManager(num_bins=self.cms.width, window_size=window_size)
-        self.reservoirs: List[Reservoir] = [Reservoir(capacity=reservoir_size) for _ in range(self.cms.width)]
+        self.reservoirs: List[Reservoir] = [Reservoir() for _ in range(self.cms.width)]
+        self.window_size = window_size
 
     def observe_message(self, message: str):
-        """
-        Call for each incoming message. Updates CMS, DGIM bins, and reservoirs.
-        """
-
         tokens = message.split()
-        # advance time index for this message
+
+        # advance all DGIMs
         self.dgim.tick()
-        ts = self.dgim.current_time
 
         # update CMS counts
         self.cms.add_many(tokens, count=1)
 
-        # for each token, mark bins (one per CMS row) and update per-bin reservoirs
         for tok in tokens:
             for row in range(self.cms.depth):
-                col = self.cms._hash(tok, 0) % self.cms.width
+                col = self.cms._hash(tok, row) % self.cms.width
                 self.dgim.add_one(col)
-                self.reservoirs[col].add(tok)
+                freq_estimate = self.cms.estimate(tok)
+                self.reservoirs[col].add(tok, score=freq_estimate)
 
-    def detect_spikes(self, recent_k: int, prev_k: Optional[int] = None, threshold: float = 2.0, min_count: int = 1) -> List[Dict]:
+    def detect_spikes(self, recent_k: int = None, prev_k: Optional[int] = None, threshold: float = 2.0, min_count: int = 1) -> List[Dict]:
         """
         Detect bins that have recent activity spike.
         - recent_k: length of the recent window in events/messages
@@ -52,10 +49,11 @@ class BurstDetector:
         - min_count: min recent count to consider (avoid tiny counts)
         Returns list of dicts: {bin, ratio, recent_count, prev_count, representative}
         """
+        if recent_k is None:
+            recent_k = self.window_size // 2
         if prev_k is None:
             prev_k = recent_k
 
-        now = self.dgim.current_time
         results = []
         eps = 1e-6
         for col in range(self.cms.width):

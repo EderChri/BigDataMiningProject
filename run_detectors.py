@@ -197,7 +197,7 @@ def main(
 
             # Get snapshots from both detectors
             top_tokens = pipeline.frequency_detector.get_frequency_analysis(top_n=top_frequency)
-            burst_summary = pipeline.burst_detector.detect_spikes(recent_k=25)
+            burst_summary = pipeline.burst_detector.detect_spikes()
 
             snapshot = {
                 "message_count": processed,
@@ -221,7 +221,7 @@ def main(
 
     # Get final analysis
     final_top_tokens = pipeline.frequency_detector.get_frequency_analysis(top_n=top_frequency)
-    final_burst = pipeline.burst_detector.detect_spikes(recent_k=25)
+    final_burst = pipeline.burst_detector.detect_spikes()
 
     # Build aggregated summary
     summary = {
@@ -244,7 +244,7 @@ def main(
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
-    plot_bump_chart(snapshots, nr_msg_per_step=update_interval)
+    plot_bump_chart(snapshots, nr_msg_per_step=update_interval, top_k=5)
 
     # Print summary to stderr
     click.echo(f"Processed {processed} messages from split '{split}'.", err=True)
