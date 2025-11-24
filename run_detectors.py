@@ -7,6 +7,7 @@ import click
 from data_loader.dataloader import DataLoader
 from data_loader.scc_dataset_loader import SCCDatasetLoader
 from plot.bump_chart import plot_bump_chart
+from plot.size_chart import plot_importance_points
 from streaming.streaming_pipeline import StreamingPipeline
 from streaming.utils.token_handler import split_preprocessed_tokens
 
@@ -15,7 +16,7 @@ def iter_preprocessed_messages(
         conversations: List[Dict],
         limit: int | None = None,
         sort_by_time: bool = True
-    ) -> Iterator[str]:
+) -> Iterator[str]:
     """
     Yield preprocessed message bodies from a list of conversations up to an optional limit.
     Each message is expected to have 'body' and 'time'.
@@ -33,6 +34,46 @@ def iter_preprocessed_messages(
             break
         yield msg["body"]
 
+
+def process_message_batch(
+        pipeline, messages: Iterable[str], exclude_duplicates: bool, show_text: bool
+) -> tuple[list[dict], int, int, int, float, set[str], dict]:
+    processed, excluded, duplicate_count, duplicate_score_sum = 0, 0, 0, 0.0
+    messages_out, recent_tokens = [], set()
+
+    for text in messages:
+        result = pipeline.process_message(text, frequency_queries=None)
+        dup_info = result.get("duplicate", {}) or {}
+        is_duplicate = dup_info.get("is_duplicate", False)
+        actual = result.get("actual", {})
+
+        if exclude_duplicates and is_duplicate:
+            excluded += 1
+            continue
+
+        if is_duplicate:
+            duplicate_count += 1
+        duplicate_score_sum += float(dup_info.get("duplicate_score", 0.0))
+
+        if show_text:
+            messages_out.append({"text": text, "duplicate": dup_info, "burst": result.get("burst", {})})
+
+        recent_tokens.update(split_preprocessed_tokens(text))
+        processed += 1
+
+    return messages_out, processed, excluded, duplicate_count, duplicate_score_sum, recent_tokens, actual
+
+
+def create_snapshot(pipeline, processed: int, duplicate_count: int, recent_tokens: Set[str], top_k: int) -> dict:
+    pipeline.frequency_detector.periodic_update(recent_tokens)
+    top_tokens = pipeline.frequency_detector.get_frequency_analysis(top_n=top_k)
+    burst_summary = pipeline.burst_detector.detect_spikes()
+    return {
+        "message_count": processed,
+        "top_tokens": top_tokens,
+        "burst": burst_summary,
+        "duplicates_so_far": duplicate_count,
+    }
 
 
 @click.command()
@@ -124,106 +165,42 @@ def main(
         update_interval: int,
         top_frequency: int,
 ) -> None:
-    """
-    Load preprocessed messages using the dataloader and stream them through the detectors.
-    Outputs aggregated statistics with periodic snapshots every N messages.
-    """
-    # Initialize dataset loader and dataloader
     dataset_loader = SCCDatasetLoader(
-        data_dir=data_dir,
-        train_data_dir=train_subdir,
-        test_data_dir=test_subdir,
-        use_skipwords=True,
+        data_dir=data_dir, train_data_dir=train_subdir, test_data_dir=test_subdir, use_skipwords=True
     )
-    dl = DataLoader([dataset_loader])
-    dl.load_data(force_reload=False, all_messages=all_messages)
+    dataloader = DataLoader([dataset_loader])
+    dataloader.load_data(force_reload=False, all_messages=all_messages)
 
-    # Select conversations for the chosen split
     conversations = dataset_loader.data.get(split, [])
+    pipeline = StreamingPipeline(window_size=update_interval)
 
-    # Initialize streaming pipeline with default detectors
-    pipeline = StreamingPipeline()
-
-    # Stream messages and aggregate outputs
-    processed = 0
-    excluded = 0
-    duplicate_count = 0
+    snapshots, messages_out = [], []
+    processed = excluded = duplicate_count = 0
     duplicate_score_sum = 0.0
-    messages_out: List[Dict] = []
-
-    # Periodic snapshots
-    snapshots: List[Dict] = []
     recent_tokens: Set[str] = set()
 
+    for idx, text in enumerate(iter_preprocessed_messages(conversations, limit=max_messages), start=1):
+        batch_result = process_message_batch(pipeline, [text], exclude_duplicates, show_text)
+        msgs, proc, excl, dups, dup_sum, tokens, actual = batch_result
 
-    for text in iter_preprocessed_messages(conversations, limit=max_messages):
-        # Process message
-        out = pipeline.process_message(text, frequency_queries=None)
-
-        dup_info = out.get("duplicate", {}) or {}
-        is_duplicate = dup_info.get("is_duplicate", False)
-
-        # Check if we should exclude this message
-        if exclude_duplicates and is_duplicate:
-            excluded += 1
-            continue
-
-        # Track duplicates
-        if is_duplicate:
-            duplicate_count += 1
-        duplicate_score_sum += float(dup_info.get("duplicate_score", 0.0))
-
-        last_burst = out.get("burst", {}) or {}
-
-        # Collect tokens from this message for periodic updates
-        tokens = split_preprocessed_tokens(text)
+        messages_out.extend(msgs)
+        processed += proc
+        excluded += excl
+        duplicate_count += dups
+        duplicate_score_sum += dup_sum
         recent_tokens.update(tokens)
 
-        if show_text:
-            messages_out.append(
-                {
-                    "text": text,
-                    "duplicate": dup_info,
-                    "burst": last_burst,
-                }
-            )
-
-        processed += 1
-
-        # Periodic update every N messages
         if processed % update_interval == 0:
-            # Update top K tokens tracking in frequency detector
-            pipeline.frequency_detector.periodic_update(recent_tokens)
-
-            # Get snapshots from both detectors
-            top_tokens = pipeline.frequency_detector.get_frequency_analysis(top_n=top_frequency)
-            burst_summary = pipeline.burst_detector.detect_spikes()
-
-            snapshot = {
-                "message_count": processed,
-                "top_10_tokens": top_tokens,
-                "burst": burst_summary,
-                "duplicates_so_far": duplicate_count,
-            }
-            snapshots.append(snapshot)
-
-            # Clear recent tokens for next period
+            snapshots.append(create_snapshot(pipeline, processed, duplicate_count, recent_tokens, top_frequency))
             recent_tokens.clear()
 
-    # Final update if there are remaining tokens
     if recent_tokens:
         pipeline.frequency_detector.periodic_update(recent_tokens)
 
-    # Final frequency estimates (aggregated)
-    freq_estimates: Dict[str, int] = {}
-    if freq_queries:
-        freq_estimates = pipeline.frequency_detector.estimate_batch(freq_queries)
-
-    # Get final analysis
+    freq_estimates = pipeline.frequency_detector.estimate_batch(freq_queries) if freq_queries else {}
     final_top_tokens = pipeline.frequency_detector.get_frequency_analysis(top_n=top_frequency)
     final_burst = pipeline.burst_detector.detect_spikes()
 
-    # Build aggregated summary
     summary = {
         "split": split,
         "processed": processed,
@@ -232,21 +209,21 @@ def main(
         "frequency_estimates": freq_estimates,
         "duplicates": {
             "total": duplicate_count,
-            "rate": (duplicate_count / processed) if processed else 0.0,
-            "avg_score": (duplicate_score_sum / processed) if processed else 0.0,
+            "rate": duplicate_count / processed if processed else 0.0,
+            "avg_score": duplicate_score_sum / processed if processed else 0.0,
         },
         "periodic_snapshots": snapshots,
-        "final burst": final_burst,
-        "final top_tokens": final_top_tokens,
+        "final_burst": final_burst,
+        "final_top_tokens": final_top_tokens,
+        "actual_counts": actual
     }
     if show_text:
         summary["messages"] = messages_out
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-
     plot_bump_chart(snapshots, nr_msg_per_step=update_interval, top_k=5)
+    plot_importance_points(snapshots, nr_msg_per_step=update_interval, top_k=5)
 
-    # Print summary to stderr
     click.echo(f"Processed {processed} messages from split '{split}'.", err=True)
     if exclude_duplicates:
         click.echo(f"Excluded {excluded} duplicate messages.", err=True)

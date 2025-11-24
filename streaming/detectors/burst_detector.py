@@ -40,7 +40,7 @@ class BurstDetector:
                 freq_estimate = self.cms.estimate(tok)
                 self.reservoirs[col].add(tok, score=freq_estimate)
 
-    def detect_spikes(self, recent_k: int = None, prev_k: Optional[int] = None, threshold: float = 2.0, min_count: int = 1) -> List[Dict]:
+    def detect_spikes(self, recent_k: int = None, prev_k: Optional[int] = None, threshold: float = 2.0, min_count: int = 1, first: bool = False) -> List[Dict]:
         """
         Detect bins that have recent activity spike.
         - recent_k: length of the recent window in events/messages
@@ -58,11 +58,14 @@ class BurstDetector:
         eps = 1e-6
         for col in range(self.cms.width):
             recent = self.dgim.count_last(col, k=recent_k)
-            prev_total = self.dgim.count_last(col, k=recent_k + prev_k)
-            prev = max(0, prev_total - recent)  # counts in the previous window
             if recent < min_count:
                 continue
-            ratio = (recent + eps) / (prev + eps)
+            if first:
+                ratio = recent
+            else:
+                prev_total = self.dgim.count_last(col, k=recent_k + prev_k)
+                prev = max(0, prev_total - recent)  # counts in the previous window
+                ratio = (recent + eps) / (prev + eps)
             if ratio >= threshold:
                 rep = self.reservoirs[col].representative()
                 results.append({

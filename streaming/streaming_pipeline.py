@@ -3,6 +3,7 @@ from typing import Dict, Iterable, List, Optional
 from streaming.detectors.frequency_detector import FrequencyDetector
 from streaming.detectors.burst_detector import BurstDetector
 from streaming.detectors.duplicate_detector import DuplicateDetector
+from utils.actual_observer import ActualObserver
 
 
 class StreamingPipeline:
@@ -20,12 +21,13 @@ class StreamingPipeline:
         frequency_detector: Optional[FrequencyDetector] = None,
         burst_detector: Optional[BurstDetector] = None,
         duplicate_detector: Optional[DuplicateDetector] = None,
-        window_size: int = 50,
+        window_size: int = 100,
     ) -> None:
         self.frequency_detector = frequency_detector or FrequencyDetector()
         self.burst_detector = burst_detector or BurstDetector(window_size=window_size)
         self.duplicate_detector = duplicate_detector or DuplicateDetector()
         self.window_size = window_size
+        self.actual_observer = ActualObserver()
 
     def process_message(self, text: str, frequency_queries: Optional[Iterable[str]] = None) -> Dict:
         """
@@ -36,6 +38,7 @@ class StreamingPipeline:
         # Update detectors
         self.frequency_detector.observe_message(text)
         self.burst_detector.observe_message(text)
+        self.actual_observer.observe_message(text)
         dup_info = self.duplicate_detector.observe_message(text)
 
         # Prepare outputs
@@ -49,6 +52,7 @@ class StreamingPipeline:
             "frequencies": freq_out,
             "burst": burst_summary,
             "duplicate": dup_info,
+            "actual": self.actual_observer.get_counts()
         }
         return out
 
