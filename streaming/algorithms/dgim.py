@@ -41,7 +41,6 @@ class DGIM:
     def add_one(self):
         self.buckets.appendleft((self.current_time, 1))
         self._compress()
-        self._expire()
 
     def tick(self):
         self.current_time += 1
@@ -57,9 +56,6 @@ class DGIM:
         for ts, size in self.buckets:
             if ts >= threshold:
                 total += size
-            else:
-                total += size // 2
-                break
         return total
 
 

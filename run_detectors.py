@@ -10,6 +10,7 @@ from plot.bump_chart import plot_bump_chart
 from plot.size_chart import plot_importance_points
 from streaming.streaming_pipeline import StreamingPipeline
 from streaming.utils.token_handler import split_preprocessed_tokens
+from utils.actual_observer import ActualObserver
 
 
 def iter_preprocessed_messages(
@@ -64,10 +65,12 @@ def process_message_batch(
     return messages_out, processed, excluded, duplicate_count, duplicate_score_sum, recent_tokens, actual
 
 
-def create_snapshot(pipeline, processed: int, duplicate_count: int, recent_tokens: Set[str], top_k: int) -> dict:
+def create_snapshot(pipeline, processed: int, duplicate_count: int, recent_tokens: Set[str], top_k: int,
+                    recent_k: int, first: bool) -> dict:
     pipeline.frequency_detector.periodic_update(recent_tokens)
     top_tokens = pipeline.frequency_detector.get_frequency_analysis(top_n=top_k)
-    burst_summary = pipeline.burst_detector.detect_spikes()
+    burst_summary = pipeline.burst_detector.detect_bursts(recent_k=recent_k, first=first,
+                                                          actual_observer=pipeline.actual_observer)[:5]
     return {
         "message_count": processed,
         "top_tokens": top_tokens,
@@ -172,7 +175,8 @@ def main(
     dataloader.load_data(force_reload=False, all_messages=all_messages)
 
     conversations = dataset_loader.data.get(split, [])
-    pipeline = StreamingPipeline(window_size=update_interval)
+    actual_observer = ActualObserver()
+    pipeline = StreamingPipeline(window_size=update_interval * 2, actual_observer=actual_observer)
 
     snapshots, messages_out = [], []
     processed = excluded = duplicate_count = 0
@@ -191,7 +195,8 @@ def main(
         recent_tokens.update(tokens)
 
         if processed % update_interval == 0:
-            snapshots.append(create_snapshot(pipeline, processed, duplicate_count, recent_tokens, top_frequency))
+            snapshots.append(create_snapshot(pipeline, processed, duplicate_count, recent_tokens, top_frequency,
+                                             recent_k=update_interval, first=processed == update_interval))
             recent_tokens.clear()
 
     if recent_tokens:
@@ -199,7 +204,8 @@ def main(
 
     freq_estimates = pipeline.frequency_detector.estimate_batch(freq_queries) if freq_queries else {}
     final_top_tokens = pipeline.frequency_detector.get_frequency_analysis(top_n=top_frequency)
-    final_burst = pipeline.burst_detector.detect_spikes()
+    final_burst = pipeline.burst_detector.detect_bursts(recent_k=processed % update_interval, first=False,
+                                                        actual_observer=pipeline.actual_observer)[:5]
 
     summary = {
         "split": split,
@@ -215,14 +221,14 @@ def main(
         "periodic_snapshots": snapshots,
         "final_burst": final_burst,
         "final_top_tokens": final_top_tokens,
-        "actual_counts": actual
+        "actual_counts": actual_observer.get_formatted_counts()
     }
     if show_text:
         summary["messages"] = messages_out
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     plot_bump_chart(snapshots, nr_msg_per_step=update_interval, top_k=5)
-    plot_importance_points(snapshots, nr_msg_per_step=update_interval, top_k=5)
+    plot_importance_points(snapshots[1:], nr_msg_per_step=update_interval, top_k=5)
 
     click.echo(f"Processed {processed} messages from split '{split}'.", err=True)
     if exclude_duplicates:

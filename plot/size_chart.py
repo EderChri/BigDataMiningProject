@@ -29,62 +29,38 @@ def plot_segments(ranks, ax, time_dfs, max_cap):
         valid = vals.notna() & (vals <= 10)
         if not valid.any():
             continue
-        segment_x, segment_y, segment_s = [], [], []
+
+        segment_x, segment_y = [], []
+
         for col_name in vals.index:
             if valid[col_name]:
                 t_idx = int(col_name.replace("time_", ""))
                 ratio = time_dfs[t_idx].loc[term, col_name] if term in time_dfs[t_idx].index else 0
-                # define normal range
-                min_ratio, max_ratio = 2, 8
-                min_size, max_size = 20, 200
-                if ratio > max_ratio:
-                    size = max_size  # cap outliers
+
+                x_pos = col_name_to_idx[col_name]
+                y_pos = vals[col_name]
+
+                # Check if ratio is exactly 10 - display as red square
+                if ratio == 10:
+                    size = 100  # fixed size for ratio 10
+                    color = 'red'
+                    marker = 's'  # square
                 else:
-                    # linear scaling within normal range
-                    size = min_size + (ratio - min_ratio) / (max_ratio - min_ratio) * (max_size - min_size)
-                segment_x.append(col_name_to_idx[col_name])
-                segment_y.append(vals[col_name])
-                segment_s.append(size)
-        if segment_x:
-            ax.scatter(segment_x, segment_y, s=segment_s, color='black', marker='o', zorder=3)
-            add_labels(ax, segment_x, segment_y, term)
+                    # define normal range
+                    min_ratio, max_ratio = 2, 8
+                    min_size, max_size = 20, 1000
+                    if ratio > max_ratio:
+                        size = max_size  # cap outliers
+                    else:
+                        # linear scaling within normal range
+                        size = min_size + (ratio - min_ratio) / (max_ratio - min_ratio) * (max_size - min_size)
+                        size = max(size, min_size)
+                    color = 'black'
+                    marker = 'o'
 
-
-def add_labels(ax, segment_x, segment_y, term):
-    if len(segment_x) == 1:
-        ax.text(segment_x[0], segment_y[0] - 0.05, term, ha='center', va='bottom', fontsize=7)
-    else:
-        ax.text(segment_x[0], segment_y[0] - 0.05, term, ha='center', va='bottom', fontsize=7)
-        ax.text(segment_x[-1], segment_y[-1] - 0.05, term, ha='center', va='bottom', fontsize=7)
-
-
-def get_marker_by_count(count):
-    """Return a marker symbol based on total appearance count."""
-    if count == 1:
-        return 'o'  # circle
-    elif count == 2:
-        return 's'  # square
-    elif count == 3:
-        return 'D'  # diamond
-    elif count == 4:
-        return '^'  # triangle_up
-    else:
-        return '*'  # star for 5 or more
-
-
-def add_legend_for_markers(ax):
-    """Add a horizontal legend below the plot explaining marker shapes."""
-    from matplotlib.lines import Line2D
-    legend_elements = [
-        Line2D([0], [0], marker='o', color='black', linestyle='None', label='Appears once'),
-        Line2D([0], [0], marker='s', color='black', linestyle='None', label='Appears twice'),
-        Line2D([0], [0], marker='D', color='black', linestyle='None', label='Appears thrice'),
-        Line2D([0], [0], marker='^', color='black', linestyle='None', label='Appears four times'),
-        Line2D([0], [0], marker='*', color='black', linestyle='None', label='Appears five times or more')
-    ]
-    ax.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, -0.15),
-              ncol=5, fontsize=8, frameon=False)
-
+                # Plot each point immediately with its specific color and marker
+                ax.scatter([x_pos], [y_pos], s=size, color=color, marker=marker, zorder=3)
+                ax.text(x_pos, y_pos - 0.10, term, ha='center', va='bottom', fontsize=7)
 
 
 def plot_importance_points(data_points, nr_msg_per_step=None, top_k=10):
@@ -102,7 +78,7 @@ def plot_importance_points(data_points, nr_msg_per_step=None, top_k=10):
     ax.set_ylabel("Rank (1 = Most Frequent)")
     if nr_msg_per_step:
         x_ticks = range(len(data_points))
-        x_labels = [nr_msg_per_step * (i + 1) for i in x_ticks]
+        x_labels = [nr_msg_per_step * (i + 2) for i in x_ticks]
         ax.set_xticks(x_ticks)
         ax.set_xticklabels(x_labels)
     ax.set_yticks(range(1, top_k + 1))
