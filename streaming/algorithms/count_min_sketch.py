@@ -95,7 +95,6 @@ class CountMinSketch:
     @property
     def memory_bytes(self) -> int:
         """Approximate memory used by the table (counts only)."""
-        # Assuming small ints but in Python this is not strict; still a useful proxy: number of counters * 8 bytes
         return self.width * self.depth * 8
 
     def __repr__(self) -> str:

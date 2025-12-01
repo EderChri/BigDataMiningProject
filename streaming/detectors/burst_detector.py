@@ -4,23 +4,23 @@ from streaming.utils.reservoir import Reservoir
 
 
 class BurstDetector:
-    def __init__(self, num_semantic_buckets=100, window_size=100):
+    def __init__(self, lsh, reservoirs, window_size=100):
         # LSH for semantic grouping
-        self.lsh = MinHashLSH(num_buckets=num_semantic_buckets, num_hashes=128)
+        self.lsh = lsh
         self.window_size = window_size
         self.counter = 0
 
         # One CMS per semantic bucket
         self.cms_per_bucket = [
             CountMinSketch.from_error_delta(epsilon=0.01, delta=0.001)
-            for _ in range(num_semantic_buckets)
+            for _ in range(self.lsh.num_buckets)
         ]
 
         # DGIM manager for all buckets
-        self.dgim = DGIMManager(num_bins=num_semantic_buckets, window_size=window_size)
+        self.dgim = DGIMManager(num_bins=self.lsh.num_buckets, window_size=window_size)
 
         # Reservoirs for representatives
-        self.reservoirs = [Reservoir() for _ in range(num_semantic_buckets)]
+        self.reservoirs = reservoirs
 
     def observe_message(self, message: str):
         tokens = message.split()

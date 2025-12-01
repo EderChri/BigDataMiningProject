@@ -1,15 +1,19 @@
 import json
-from collections import Counter
-from typing import Iterable, Iterator, List, Dict, Set
+from pathlib import Path
+from typing import Iterable, Iterator, List, Dict
 
 import click
 
 from data_loader.dataloader import DataLoader
 from data_loader.scc_dataset_loader import SCCDatasetLoader
 from plot.bump_chart import plot_bump_chart
+from plot.line_chart import plot_average_counts_comparison
 from plot.size_chart import plot_importance_points
+from streaming.algorithms.min_hash_lsh import MinHashLSH
+from streaming.message_processor import MessageProcessor
 from streaming.streaming_pipeline import StreamingPipeline
-from streaming.utils.token_handler import split_preprocessed_tokens
+from streaming.utils.caching import get_cache_key, load_cached_results, save_results
+from streaming.utils.reservoir import Reservoir
 from utils.actual_observer import ActualObserver
 
 
@@ -34,49 +38,6 @@ def iter_preprocessed_messages(
         if limit is not None and i >= limit:
             break
         yield msg["body"]
-
-
-def process_message_batch(
-        pipeline, messages: Iterable[str], exclude_duplicates: bool, show_text: bool
-) -> tuple[list[dict], int, int, int, float, set[str], dict]:
-    processed, excluded, duplicate_count, duplicate_score_sum = 0, 0, 0, 0.0
-    messages_out, recent_tokens = [], set()
-
-    for text in messages:
-        result = pipeline.process_message(text, frequency_queries=None)
-        dup_info = result.get("duplicate", {}) or {}
-        is_duplicate = dup_info.get("is_duplicate", False)
-        actual = result.get("actual", {})
-
-        if exclude_duplicates and is_duplicate:
-            excluded += 1
-            continue
-
-        if is_duplicate:
-            duplicate_count += 1
-        duplicate_score_sum += float(dup_info.get("duplicate_score", 0.0))
-
-        if show_text:
-            messages_out.append({"text": text, "duplicate": dup_info, "burst": result.get("burst", {})})
-
-        recent_tokens.update(split_preprocessed_tokens(text))
-        processed += 1
-
-    return messages_out, processed, excluded, duplicate_count, duplicate_score_sum, recent_tokens, actual
-
-
-def create_snapshot(pipeline, processed: int, duplicate_count: int, recent_tokens: Set[str], top_k: int,
-                    recent_k: int, first: bool) -> dict:
-    pipeline.frequency_detector.periodic_update(recent_tokens)
-    top_tokens = pipeline.frequency_detector.get_frequency_analysis(top_n=top_k)
-    burst_summary = pipeline.burst_detector.detect_bursts(recent_k=recent_k, first=first,
-                                                          actual_observer=pipeline.actual_observer)[:5]
-    return {
-        "message_count": processed,
-        "top_tokens": top_tokens,
-        "burst": burst_summary,
-        "duplicates_so_far": duplicate_count,
-    }
 
 
 @click.command()
@@ -151,88 +112,84 @@ def create_snapshot(pipeline, processed: int, duplicate_count: int, recent_token
 @click.option(
     "--top-frequency",
     type=int,
-    default=10,
+    default=300,
     show_default=True,
     help="Number of top frequent tokens to report in analysis.",
 )
+@click.option(
+    "--force-recalc/--use-cache",
+    default=False,
+    show_default=True,
+    help="Force recalculation even if cached results exist."
+)
+@click.option(
+    "--cache-dir",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=str),
+    default=".cache/streaming",
+    show_default=True,
+    help="Directory to store cached computation results."
+)
 def main(
-        data_dir: str,
-        train_subdir: str,
-        test_subdir: str,
-        split: str,
-        all_messages: bool,
-        max_messages: int,
-        freq_queries: Iterable[str],
-        show_text: bool,
-        exclude_duplicates: bool,
-        update_interval: int,
-        top_frequency: int,
-) -> None:
-    dataset_loader = SCCDatasetLoader(
-        data_dir=data_dir, train_data_dir=train_subdir, test_data_dir=test_subdir, use_skipwords=True
-    )
+        data_dir: str, train_subdir: str, test_subdir: str, split: str,
+        all_messages: bool, max_messages: int, freq_queries: Iterable[str],
+        show_text: bool, exclude_duplicates: bool, update_interval: int, top_frequency: int,
+        cache_dir=str, force_recalc=None) -> None:
+    # Setup cache
+    cache_key = get_cache_key(data_dir, split, max_messages, all_messages,
+                              exclude_duplicates, update_interval)
+    cache_file = Path(cache_dir) / f"{cache_key}.pkl"
+
+    # Try loading cache
+    if not force_recalc:
+        cached = load_cached_results(cache_file)
+        if cached:
+            click.echo(f"Loaded cached results from {cache_file}", err=True)
+            summary = cached['summary']
+            snapshots = cached['snapshots']
+
+            # Print and plot
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+            plot_bump_chart(snapshots, nr_msg_per_step=update_interval, top_k=5)
+            plot_importance_points(snapshots[1:], nr_msg_per_step=update_interval, top_k=5)
+            plot_average_counts_comparison(snapshots, update_interval)
+
+            click.echo(f"Processed {summary['processed']} messages from split '{split}'.", err=True)
+            return
+
+    dataset_loader = SCCDatasetLoader(data_dir=data_dir, train_data_dir=train_subdir,
+                                      test_data_dir=test_subdir, use_skipwords=True)
     dataloader = DataLoader([dataset_loader])
     dataloader.load_data(force_reload=False, all_messages=all_messages)
 
     conversations = dataset_loader.data.get(split, [])
-    actual_observer = ActualObserver()
-    pipeline = StreamingPipeline(window_size=update_interval * 2, actual_observer=actual_observer)
+    lsh = MinHashLSH(num_buckets=100, num_hashes=128)
+    reservoirs = [Reservoir() for _ in range(lsh.num_buckets)]
+    actual_observer = ActualObserver(lsh=lsh, reservoirs=reservoirs)
+    pipeline = StreamingPipeline(window_size=update_interval * 2, actual_observer=actual_observer,
+                                 lsh=lsh, reservoirs=reservoirs)
 
-    snapshots, messages_out = [], []
-    processed = excluded = duplicate_count = 0
-    duplicate_score_sum = 0.0
-    recent_tokens: Set[str] = set()
+    # Process messages
+    processor = MessageProcessor(pipeline, exclude_duplicates, show_text, update_interval, top_frequency)
 
     for idx, text in enumerate(iter_preprocessed_messages(conversations, limit=max_messages), start=1):
-        batch_result = process_message_batch(pipeline, [text], exclude_duplicates, show_text)
-        msgs, proc, excl, dups, dup_sum, tokens, actual = batch_result
+        processor.process_message(text, is_first_snapshot=(processor.state.processed == 0))
 
-        messages_out.extend(msgs)
-        processed += proc
-        excluded += excl
-        duplicate_count += dups
-        duplicate_score_sum += dup_sum
-        recent_tokens.update(tokens)
+    # Generate final results
+    summary = processor.finalize(freq_queries)
+    summary["split"] = split
 
-        if processed % update_interval == 0:
-            snapshots.append(create_snapshot(pipeline, processed, duplicate_count, recent_tokens, top_frequency,
-                                             recent_k=update_interval, first=processed == update_interval))
-            recent_tokens.clear()
+    # Save to cache
+    save_results(cache_file, summary, processor.state.snapshots)
+    click.echo(f"Saved results to {cache_file}", err=True)
 
-    if recent_tokens:
-        pipeline.frequency_detector.periodic_update(recent_tokens)
+    # print(json.dumps(summary, ensure_ascii=False, indent=2))
+    plot_bump_chart(processor.state.snapshots, nr_msg_per_step=update_interval, top_k=5)
+    plot_importance_points(processor.state.snapshots[1:], nr_msg_per_step=update_interval, top_k=5)
+    plot_average_counts_comparison(processor.state.snapshots, update_interval)
 
-    freq_estimates = pipeline.frequency_detector.estimate_batch(freq_queries) if freq_queries else {}
-    final_top_tokens = pipeline.frequency_detector.get_frequency_analysis(top_n=top_frequency)
-    final_burst = pipeline.burst_detector.detect_bursts(recent_k=processed % update_interval, first=False,
-                                                        actual_observer=pipeline.actual_observer)[:5]
-
-    summary = {
-        "split": split,
-        "processed": processed,
-        "excluded_duplicates": excluded if exclude_duplicates else 0,
-        "update_interval": update_interval,
-        "frequency_estimates": freq_estimates,
-        "duplicates": {
-            "total": duplicate_count,
-            "rate": duplicate_count / processed if processed else 0.0,
-            "avg_score": duplicate_score_sum / processed if processed else 0.0,
-        },
-        "periodic_snapshots": snapshots,
-        "final_burst": final_burst,
-        "final_top_tokens": final_top_tokens,
-        "actual_counts": actual_observer.get_formatted_counts()
-    }
-    if show_text:
-        summary["messages"] = messages_out
-
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
-    plot_bump_chart(snapshots, nr_msg_per_step=update_interval, top_k=5)
-    plot_importance_points(snapshots[1:], nr_msg_per_step=update_interval, top_k=5)
-
-    click.echo(f"Processed {processed} messages from split '{split}'.", err=True)
+    click.echo(f"Processed {processor.state.processed} messages from split '{split}'.", err=True)
     if exclude_duplicates:
-        click.echo(f"Excluded {excluded} duplicate messages.", err=True)
+        click.echo(f"Excluded {processor.state.excluded} duplicate messages.", err=True)
 
 
 if __name__ == "__main__":
