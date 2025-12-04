@@ -63,7 +63,7 @@ def plot_segments(ranks, ax, time_dfs, max_cap):
                 ax.text(x_pos, y_pos - 0.10, term, ha='center', va='bottom', fontsize=7)
 
 
-def plot_importance_points(data_points, nr_msg_per_step=None, top_k=10):
+def plot_importance_points(data_points, nr_msg_per_step=None, top_k=10, file="size_chart.png"):
     time_dfs = prepare_time_dfs(data_points, top_k=top_k)
     ranks = compute_ranks(time_dfs)
     ratios = []
@@ -83,4 +83,4 @@ def plot_importance_points(data_points, nr_msg_per_step=None, top_k=10):
         ax.set_xticklabels(x_labels)
     ax.set_yticks(range(1, top_k + 1))
     fig.tight_layout()
-    plt.show()
+    plt.savefig(f"{file}")

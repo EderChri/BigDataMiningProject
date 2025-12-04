@@ -4,7 +4,7 @@ from streaming.utils.reservoir import Reservoir
 
 
 class BurstDetector:
-    def __init__(self, lsh, reservoirs, window_size=100):
+    def __init__(self, lsh, reservoirs, epsilon=0.01, delta=0.001, seed=0, window_size=100):
         # LSH for semantic grouping
         self.lsh = lsh
         self.window_size = window_size
@@ -12,8 +12,8 @@ class BurstDetector:
 
         # One CMS per semantic bucket
         self.cms_per_bucket = [
-            CountMinSketch.from_error_delta(epsilon=0.01, delta=0.001)
-            for _ in range(self.lsh.num_buckets)
+            CountMinSketch.from_error_delta(epsilon=epsilon, delta=delta, seed=seed+i)
+            for i in range(self.lsh.num_buckets)
         ]
 
         # DGIM manager for all buckets

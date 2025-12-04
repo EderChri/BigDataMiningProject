@@ -6,6 +6,7 @@ import click
 
 from data_loader.dataloader import DataLoader
 from data_loader.scc_dataset_loader import SCCDatasetLoader
+from plot.boxplot import plot_boxplot_comparison_seaborn
 from plot.bump_chart import plot_bump_chart
 from plot.line_chart import plot_average_counts_comparison
 from plot.size_chart import plot_importance_points
@@ -152,6 +153,7 @@ def main(
             plot_bump_chart(snapshots, nr_msg_per_step=update_interval, top_k=5)
             plot_importance_points(snapshots[1:], nr_msg_per_step=update_interval, top_k=5)
             plot_average_counts_comparison(snapshots, update_interval)
+            plot_boxplot_comparison_seaborn(snapshots, update_interval)
 
             click.echo(f"Processed {summary['processed']} messages from split '{split}'.", err=True)
             return
@@ -165,8 +167,11 @@ def main(
     lsh = MinHashLSH(num_buckets=100, num_hashes=128)
     reservoirs = [Reservoir() for _ in range(lsh.num_buckets)]
     actual_observer = ActualObserver(lsh=lsh, reservoirs=reservoirs)
+    seed = 42
+    epsilon = 0.05
+    delta = 1e-3
     pipeline = StreamingPipeline(window_size=update_interval * 2, actual_observer=actual_observer,
-                                 lsh=lsh, reservoirs=reservoirs)
+                                 lsh=lsh, reservoirs=reservoirs, seed=seed, epsilon=epsilon, delta=delta)
 
     # Process messages
     processor = MessageProcessor(pipeline, exclude_duplicates, show_text, update_interval, top_frequency)
@@ -183,9 +188,10 @@ def main(
     click.echo(f"Saved results to {cache_file}", err=True)
 
     # print(json.dumps(summary, ensure_ascii=False, indent=2))
-    plot_bump_chart(processor.state.snapshots, nr_msg_per_step=update_interval, top_k=5)
-    plot_importance_points(processor.state.snapshots[1:], nr_msg_per_step=update_interval, top_k=5)
-    plot_average_counts_comparison(processor.state.snapshots, update_interval)
+    plot_bump_chart(processor.state.snapshots, nr_msg_per_step=update_interval, top_k=5, file="plot/output/bump_chart.png")
+    plot_importance_points(processor.state.snapshots[1:], nr_msg_per_step=update_interval, top_k=5, file="plot/output/size_chart.png")
+    plot_average_counts_comparison(processor.state.snapshots, update_interval, file="plot/output/avg_counts.png")
+    plot_boxplot_comparison_seaborn(processor.state.snapshots, update_interval, file="plot/output/boxplot_comparison.png")
 
     click.echo(f"Processed {processor.state.processed} messages from split '{split}'.", err=True)
     if exclude_duplicates:

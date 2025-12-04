@@ -84,7 +84,7 @@ def add_legend_for_markers(ax):
 
 
 
-def plot_bump_chart(data_points, nr_msg_per_step=None, top_k=10):
+def plot_bump_chart(data_points, nr_msg_per_step=None, top_k=10, file="bump_chart.png"):
     time_dfs = prepare_time_dfs(data_points, top_k=top_k)
     ranks = compute_ranks(time_dfs)
     fig, ax = plt.subplots(figsize=(11, 6))
@@ -101,4 +101,4 @@ def plot_bump_chart(data_points, nr_msg_per_step=None, top_k=10):
     ax.set_yticks(range(1, top_k + 1))
     add_legend_for_markers(ax)
     fig.tight_layout()
-    plt.show()
+    plt.savefig(f"{file}")

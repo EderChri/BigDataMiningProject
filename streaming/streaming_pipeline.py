@@ -28,14 +28,19 @@ class StreamingPipeline:
             window_size: int = 100,
             actual_observer: Optional[ActualObserver] = None,
             lsh=None,
-            reservoirs=None
+            reservoirs=None,
+            epsilon=None,
+            delta=None,
+            seed=None,
     ) -> None:
         self.lsh = lsh or MinHashLSH(num_buckets=100, num_hashes=128)
         self.reservoirs = reservoirs or [Reservoir() for _ in range(self.lsh.num_buckets)]
-        self.bucket_frequency_detector = BucketFrequencyDetector(lsh=self.lsh, reservoirs=self.reservoirs)
-        self.token_frequency_detector = TokenFrequencyDetector()
+        self.bucket_frequency_detector = BucketFrequencyDetector(lsh=self.lsh, reservoirs=self.reservoirs,
+                                                                 epsilon=epsilon, delta=delta, seed=seed)
+        self.token_frequency_detector = TokenFrequencyDetector(epsilon=epsilon, delta=delta, seed=seed)
         self.burst_detector = burst_detector or BurstDetector(lsh=self.lsh, window_size=window_size,
-                                                              reservoirs=self.reservoirs)
+                                                              reservoirs=self.reservoirs, epsilon=epsilon, delta=delta,
+                                                              seed=seed)
         self.duplicate_detector = duplicate_detector or DuplicateDetector()
         self.window_size = window_size
         self.actual_observer = actual_observer or ActualObserver()
