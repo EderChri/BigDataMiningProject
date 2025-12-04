@@ -1,9 +1,7 @@
 from typing import Dict, Iterable, List, Optional
 
 from streaming.algorithms.min_hash_lsh import MinHashLSH
-from streaming.detectors.base_frequency_detector import BaseFrequencyDetector
 from streaming.detectors.bucket_frequency_detector import BucketFrequencyDetector
-from streaming.detectors.frequency_detector import FrequencyDetector
 from streaming.detectors.burst_detector import BurstDetector
 from streaming.detectors.duplicate_detector import DuplicateDetector
 from streaming.detectors.token_frequency_detector import TokenFrequencyDetector
