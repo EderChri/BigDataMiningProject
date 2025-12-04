@@ -61,11 +61,6 @@ class CountMinSketch:
             self.table[r][c] += count
         self.total_count += count
 
-    def add_many(self, items: Iterable[str], count: int = 1) -> None:
-        """Add multiple items with the same count."""
-        for it in items:
-            self.add(it, count=count)
-
     def estimate(self, item: str) -> int:
         """
         Estimate the frequency of the item using min across rows.
@@ -75,27 +70,3 @@ class CountMinSketch:
             c = self._hash(item, r)
             mins.append(self.table[r][c])
         return min(mins) if mins else 0
-
-    def merge(self, other: "CountMinSketch") -> "CountMinSketch":
-        """
-        Merge another CMS with identical dimensions and seed into this one (in-place).
-        """
-        if not isinstance(other, CountMinSketch):
-            raise TypeError("other must be a CountMinSketch")
-        if (self.width, self.depth, self.seed) != (other.width, other.depth, other.seed):
-            raise ValueError("Cannot merge CMS with different width/depth/seed")
-        for r in range(self.depth):
-            row = self.table[r]
-            other_row = other.table[r]
-            for c in range(self.width):
-                row[c] += other_row[c]
-        self.total_count += other.total_count
-        return self
-
-    @property
-    def memory_bytes(self) -> int:
-        """Approximate memory used by the table (counts only)."""
-        return self.width * self.depth * 8
-
-    def __repr__(self) -> str:
-        return f"CountMinSketch(width={self.width}, depth={self.depth}, total={self.total_count})"
