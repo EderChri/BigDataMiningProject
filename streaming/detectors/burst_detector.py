@@ -23,6 +23,7 @@ class BurstDetector:
         self.reservoirs = reservoirs
 
     def observe_message(self, message: str):
+        """Process a message and update DGIM for each bucket."""
         tokens = message.split()
 
         # Advance sliding window
@@ -44,7 +45,7 @@ class BurstDetector:
             self.dgim.add_one(bucket_id)
 
     def detect_bursts(self, recent_k=100, prev_k=None, threshold=0.8, min_count=10, first=False, actual_observer=None):
-
+        """Detect bursts in the stream based on recent and previous counts."""
         if recent_k >= self.window_size:
             raise ValueError("recent_k must be smaller than window_size")
 

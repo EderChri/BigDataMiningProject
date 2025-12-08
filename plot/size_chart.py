@@ -73,7 +73,7 @@ def plot_importance_points(data_points, nr_msg_per_step=None, top_k=10, file="si
     fig, ax = plt.subplots(figsize=(11, 6))
     plot_segments(ranks, ax, time_dfs, max_cap)
     ax.invert_yaxis()
-    ax.set_title(f"Sliding Top {top_k} Bursting Terms Over Time")
+    ax.set_title(f"Sliding Top {top_k} Bursting Buckets Over Time")
     ax.set_xlabel("Time Point")
     ax.set_ylabel("Rank (1 = Most Frequent)")
     if nr_msg_per_step:
